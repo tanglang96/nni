@@ -79,6 +79,7 @@ class Pruner(Compressor):
 
     def __init__(self, config_list):
         super().__init__(config_list)
+        self.mask_list = {}
 
     def calc_mask(self, weight, config, op, op_type, op_name):
         """Pruners should overload this method to provide mask for weight tensors.
@@ -109,6 +110,42 @@ class Pruner(Compressor):
             return ret
 
         layer.module.forward = new_forward
+
+    def export_model(self, model, save_path=None, onnx_path=None):
+        # export onnx/state_dict/
+        # export sparse model and sparsity statics
+        export_dict = {}
+        export_dict['state_dict'] = model.state_dict()
+        mask_dict = {}
+        for name, value in model.state_dict():
+            found = False
+            for layer_name, mask in self.mask_list:
+                if name == 'module.' + layer_name + '.weight' or layer_name + '.weight':
+                    mask_dict[name] = self.mask_list[layer_name]
+                    found = True
+                    break
+            if not found:
+                mask_dict[name] = None
+        export_dict['mask_dict'] = mask_dict
+        for name, m in model.named_modules():
+            mask = self.mask_list.get(name)
+            if mask is not None:
+                mask_sum = mask.sum().item()
+                mask_num = mask.numel()
+                _logger.info('Layer: {}  Sparsity: {}'.format(name, 1 - mask_sum / mask_num))
+                print('Layer: {}  Sparsity: {}'.format(name, 1 - mask_sum / mask_num))
+                m.weight.data = m.weight.data.mul(mask)
+            else:
+                _logger.info('Layer: {}  Sparsity: {}'.format(name, 0))
+                print('Layer: {}  Sparsity: {}'.format(name, 0))
+        assert save_path is not None, 'save_path must be specified'
+        torch.save(export_dict, save_path)
+        _logger.info('Model state_dict and mask_dict saved to {}'.format(save_path))
+        print('Model state_dict and mask_dict saved to {}'.format(save_path))
+        if onnx_path is not None:
+            torch.save(export_dict, onnx_path)
+            _logger.info('Model in onnx saved to {}'.format(onnx_path))
+            print('Model in onnx saved to {}'.format(onnx_path))
 
 
 class Quantizer(Compressor):
